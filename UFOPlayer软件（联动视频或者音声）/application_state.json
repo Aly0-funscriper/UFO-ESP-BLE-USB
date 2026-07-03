@@ -1,0 +1,1 @@
+{"$type":"UFOPlayer.ViewModels.MainWindowViewModel, UFOPlayer","_settings":{"$type":"UFOPlayer.ViewModels.SettingsViewModel, UFOPlayer","VlcEndpoint":"127.0.0.1:8080","VlcPassword":"1234","DeoVrEndpoint":"localhost:23554"}}
