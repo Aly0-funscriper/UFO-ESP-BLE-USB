@@ -1,5 +1,5 @@
 ## 许可协议
-除ufoplayer之外，本项目所有代码采用 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 许可。
+本项目所有代码采用 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 许可。
 
 - **署名**：任何使用、修改或再发布时，必须在显著位置注明原始仓库地址：`https://github.com/你的用户名/你的仓库`
 - **非商业性使用**：不得将本项目或其衍生作品用于商业目的。
