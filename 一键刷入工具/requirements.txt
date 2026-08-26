@@ -1,3 +1,4 @@
 mpremote
 pyserial
 pyinstaller
+esptool==5.3.1

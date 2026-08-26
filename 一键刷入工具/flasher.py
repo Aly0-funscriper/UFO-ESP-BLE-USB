@@ -9,13 +9,18 @@ import time
 
 from serial import Serial
 from serial.tools import list_ports
+from esptool import main as esptool_main
 from mpremote.main import main as mpremote_main
 
 
-APP_TITLE = "UFO-ESP BLE + USB one-click flasher"
+APP_TITLE = "UFO-ESP MicroPython + BLE + USB one-click flasher"
 FIRMWARE_FILES = ("motor.py", "main.py", "boot.py")
 OBSOLETE_FILES = ("muse_broadcast.py",)
 EXPECTED_VID = 0x303A
+MICROPYTHON_IMAGE = "ESP32_GENERIC_C3-20260824-v1.29.0.bin"
+MICROPYTHON_VERSION = "v1.29.0"
+MICROPYTHON_SHA256 = "BF72ED9EB88AD3A8F49D02C3D371F9EA34C90A8A303AEB9E324D8EFD4A2A655A"
+MICROPYTHON_MARKER = "MICROPYTHON_ENV_OK"
 
 
 def app_dir() -> Path:
@@ -27,6 +32,11 @@ def app_dir() -> Path:
 def resource_dir() -> Path:
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return root / "firmware"
+
+
+def micropython_image_path() -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return root / "micropython" / MICROPYTHON_IMAGE
 
 
 def sha256(path: Path) -> str:
@@ -49,12 +59,173 @@ def run_mpremote(arguments, tolerate_failure=False):
             status = mpremote_main()
     except SystemExit as exc:
         status = int(exc.code or 0)
+    except Exception as exc:
+        if not tolerate_failure:
+            raise RuntimeError(
+                "mpremote failed: " + " ".join(map(str, arguments))
+            ) from exc
+        status = 1
     finally:
         sys.argv = previous_argv
 
     if status and not tolerate_failure:
         raise RuntimeError("mpremote failed: " + " ".join(map(str, arguments)))
     return status == 0
+
+
+def capture_mpremote(arguments):
+    previous_argv = sys.argv[:]
+    captured = io.StringIO()
+    sys.argv = ["mpremote", *[str(value) for value in arguments]]
+    try:
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            status = mpremote_main()
+    except SystemExit as exc:
+        status = int(exc.code or 0)
+    except Exception as exc:
+        status = 1
+        captured.write("\n{}: {}".format(type(exc).__name__, exc))
+    finally:
+        sys.argv = previous_argv
+    return status == 0, captured.getvalue()
+
+
+def probe_micropython(port: str):
+    command = (
+        "import sys; "
+        "print('{}', sys.implementation.name, ".format(MICROPYTHON_MARKER)
+        + "'.'.join(str(x) for x in sys.implementation.version[:3]), sys.platform)"
+    )
+    ok, output = capture_mpremote(["connect", port, "+", "exec", command])
+    if ok and MICROPYTHON_MARKER in output:
+        marker_line = next(
+            (line.strip() for line in output.splitlines() if MICROPYTHON_MARKER in line),
+            MICROPYTHON_MARKER,
+        )
+        return True, marker_line
+
+    lowered = output.lower()
+    busy_markers = (
+        "access is denied",
+        "permissionerror",
+        "permission denied",
+        "the device does not recognize the command",
+        "resource busy",
+    )
+    if any(marker in lowered for marker in busy_markers):
+        raise RuntimeError(
+            "The serial port is busy. Close MultiFunPlayer, Thonny, serial monitors, and flashing tools first."
+        )
+    return False, output.strip()
+
+
+def run_esptool(arguments):
+    try:
+        result = esptool_main([str(value) for value in arguments])
+    except SystemExit as exc:
+        status = int(exc.code or 0)
+        if status:
+            raise RuntimeError("esptool failed with exit code {}".format(status)) from exc
+        return
+    if isinstance(result, int) and result:
+        raise RuntimeError("esptool failed with exit code {}".format(result))
+
+
+def find_matching_port(previous_port):
+    ports = list(list_ports.comports())
+    same_name = next(
+        (item for item in ports if item.device.upper() == previous_port.device.upper()),
+        None,
+    )
+    if same_name is not None:
+        return same_name
+
+    serial_number = getattr(previous_port, "serial_number", None)
+    if serial_number:
+        same_serial = next(
+            (item for item in ports if item.serial_number == serial_number),
+            None,
+        )
+        if same_serial is not None:
+            return same_serial
+
+    location = getattr(previous_port, "location", None)
+    if location:
+        same_location = next(
+            (item for item in ports if item.location == location and item.vid == EXPECTED_VID),
+            None,
+        )
+        if same_location is not None:
+            return same_location
+
+    espressif = [item for item in ports if item.vid == EXPECTED_VID]
+    return espressif[0] if len(espressif) == 1 else None
+
+
+def wait_for_port(previous_port, timeout=20.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        match = find_matching_port(previous_port)
+        if match is not None:
+            return match
+        time.sleep(0.25)
+    raise RuntimeError(
+        "The ESP32-C3 serial port did not return after flashing. Reconnect the USB cable and run the flasher again."
+    )
+
+
+def install_micropython(port_info, image_path: Path):
+    if not image_path.is_file():
+        raise RuntimeError("Embedded MicroPython image is missing: " + str(image_path))
+    if sha256(image_path) != MICROPYTHON_SHA256:
+        raise RuntimeError("Embedded MicroPython image failed SHA-256 verification")
+
+    print("  MicroPython was not detected; installing embedded", MICROPYTHON_VERSION)
+    print("  target chip: ESP32-C3; the board flash will be erased")
+    base = ["--chip", "esp32c3", "--port", port_info.device]
+    try:
+        run_esptool([*base, "erase-flash"])
+        port_info = wait_for_port(port_info)
+        run_esptool([
+            "--chip", "esp32c3",
+            "--port", port_info.device,
+            "--baud", "460800",
+            "write-flash", "0x0", image_path,
+        ])
+    except Exception as exc:
+        raise RuntimeError(
+            "Automatic MicroPython installation failed. If the board is not in download mode, "
+            "hold BOOT, tap RESET, release BOOT, and run this flasher again. Original error: {}".format(exc)
+        ) from exc
+
+    port_info = wait_for_port(port_info)
+    deadline = time.monotonic() + 20.0
+    last_output = ""
+    while time.monotonic() < deadline:
+        try:
+            installed, last_output = probe_micropython(port_info.device)
+        except RuntimeError:
+            installed = False
+        if installed:
+            print("  installed and verified:", last_output)
+            return port_info
+        time.sleep(0.5)
+        match = find_matching_port(port_info)
+        if match is not None:
+            port_info = match
+
+    raise RuntimeError(
+        "MicroPython was written, but its REPL could not be verified. Last response: " + last_output
+    )
+
+
+def ensure_micropython(port_info, image_path: Path):
+    installed, details = probe_micropython(port_info.device)
+    if installed:
+        print("  detected:", details)
+        print("  environment installation skipped")
+        return port_info, False
+    return install_micropython(port_info, image_path), True
 
 
 def detect_port(requested_port=None):
@@ -78,18 +249,15 @@ def detect_port(requested_port=None):
 
 def backup_board(port: str, backup_dir: Path):
     backup_dir.mkdir(parents=True, exist_ok=False)
-    required = {"boot.py", "main.py", "motor.py"}
     for name in (*FIRMWARE_FILES, *OBSOLETE_FILES):
         destination = backup_dir / name
         print("  backing up", name)
         copied = run_mpremote(
             ["connect", port, "+", "fs", "cp", ":" + name, destination],
-            tolerate_failure=name not in required,
+            tolerate_failure=True,
         )
-        if name in required and not copied:
-            raise RuntimeError("Could not back up required board file: " + name)
-        if name not in required and not copied:
-            print("    not present (already removed)")
+        if not copied:
+            print("    not present")
 
 
 def upload_firmware(port: str, firmware_dir: Path):
@@ -205,6 +373,17 @@ def verify_usb_heartbeat(port: str):
         serial_port.write(b"UFO,0,0\n")
 
 
+def run_self_test():
+    image_path = micropython_image_path()
+    if not image_path.is_file() or sha256(image_path) != MICROPYTHON_SHA256:
+        raise RuntimeError("Embedded MicroPython self-test failed")
+    for name in FIRMWARE_FILES:
+        if not (resource_dir() / name).is_file():
+            raise RuntimeError("Embedded UFO firmware self-test failed: " + name)
+    run_esptool(["version"])
+    print("SELF_TEST_OK:", MICROPYTHON_VERSION, MICROPYTHON_SHA256)
+
+
 def main():
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -215,14 +394,24 @@ def main():
     parser = argparse.ArgumentParser(description=APP_TITLE)
     parser.add_argument("--port", help="Optional COM port override, for example COM5")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter before closing")
+    parser.add_argument("--self-test", action="store_true", help="Verify embedded resources without using a board")
     args = parser.parse_args()
 
     os.system("")
     print("=" * 64)
     print(APP_TITLE)
     print("Dual control firmware: native BLE + direct USB serial")
+    print("Embedded environment: MicroPython", MICROPYTHON_VERSION, "for ESP32-C3")
     print("Muse and XToys services will be removed")
     print("=" * 64)
+
+    if args.self_test:
+        try:
+            run_self_test()
+            return 0
+        except Exception as exc:
+            print("SELF_TEST_FAILED:", exc)
+            return 1
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     backup_dir = app_dir() / "backup" / timestamp
@@ -232,16 +421,24 @@ def main():
         port_info = detect_port(args.port)
         print("Device:", port_info.device, "-", port_info.description)
         print("Backup:", backup_dir)
-        print("[1/4] Backing up current board files")
-        backup_board(port_info.device, backup_dir)
-        print("[2/4] Writing UFO-only firmware")
+        print("[1/5] Checking the MicroPython environment")
+        port_info, environment_installed = ensure_micropython(
+            port_info, micropython_image_path()
+        )
+        print("[2/5] Backing up current board files")
+        if environment_installed:
+            backup_dir.mkdir(parents=True, exist_ok=False)
+            print("  skipped: no readable MicroPython filesystem existed before installation")
+        else:
+            backup_board(port_info.device, backup_dir)
+        print("[3/5] Writing UFO-only firmware")
         upload_firmware(port_info.device, resource_dir())
-        print("[3/4] Reading files back and verifying SHA-256")
+        print("[4/5] Reading files back and verifying SHA-256")
         verify_board(port_info.device, resource_dir(), verify_dir)
-        print("[4/4] Rebooting and checking BLE + USB operation")
+        print("[5/5] Rebooting and checking BLE + USB operation")
         reboot_and_capture(port_info.device)
         print()
-        print("SUCCESS: BLE + USB firmware was installed and verified.")
+        print("SUCCESS: MicroPython and BLE + USB firmware were verified.")
         print("The board is advertising as UFO-ESP and accepting USB heartbeats.")
         exit_code = 0
     except Exception as exc:

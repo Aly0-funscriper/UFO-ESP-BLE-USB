@@ -11,6 +11,7 @@
 - BLE/USB 控制权切换时先经过停止状态；
 - 电机每 10ms 更新，快速换向时加入 20ms 安全死区；
 - 提供 Windows 一键刷入 EXE，自动备份、写入、读回校验和实板自检。
+- 一键刷入 EXE 内置官方 MicroPython v1.29.0 ESP32-C3 环境和 esptool：未检测到环境时自动安装，已安装时直接继续刷 UFO 固件。
 
 ## 下载
 
@@ -21,8 +22,11 @@
 1. 关闭 MultiFunPlayer、Thonny 和其他占用串口的软件。
 2. 用 USB 数据线连接 ESP32-C3。
 3. 运行 `UFO-ESP-BLE-USB-OneClick-Flasher.exe`。
-4. 刷入器会自动寻找 Espressif 串口并备份旧文件。
-5. 最后会短暂以约 2% 速度测试左路，并验证 500ms 失联后双路停止。
+4. 刷入器先检测 MicroPython；已安装则跳过，未安装则自动擦除并安装内置环境。
+5. 环境可用后，刷入器会备份旧文件并上传 UFO 固件。
+6. 最后会短暂以约 2% 速度测试左路，并验证 500ms 失联后双路停止。
+
+只有检测不到 MicroPython 时才会执行整片擦除。若开发板无法自动进入下载模式，刷入器会提示使用 `BOOT` + `RESET` 进入下载模式。
 
 开发板刷入后以 `UFO-ESP` 广播。对应的 MFP 版本位于 [Aly0-funscriper/MultiFunPlayer-UFO-TW](https://github.com/Aly0-funscriper/MultiFunPlayer-UFO-TW)。
 
