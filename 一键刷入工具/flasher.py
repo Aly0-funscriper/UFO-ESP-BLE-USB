@@ -21,6 +21,8 @@ MICROPYTHON_IMAGE = "ESP32_GENERIC_C3-20260824-v1.29.0.bin"
 MICROPYTHON_VERSION = "v1.29.0"
 MICROPYTHON_SHA256 = "BF72ED9EB88AD3A8F49D02C3D371F9EA34C90A8A303AEB9E324D8EFD4A2A655A"
 MICROPYTHON_MARKER = "MICROPYTHON_ENV_OK"
+PORT_DISCOVERY_TIMEOUT = 20.0
+ENVIRONMENT_PROBE_ATTEMPTS = 3
 
 
 def app_dir() -> Path:
@@ -109,6 +111,9 @@ def probe_micropython(port: str):
         "access is denied",
         "permissionerror",
         "permission denied",
+        "failed to access",
+        "may be in use",
+        "port is busy",
         "the device does not recognize the command",
         "resource busy",
     )
@@ -219,32 +224,92 @@ def install_micropython(port_info, image_path: Path):
     )
 
 
+def verify_esptool_access(port_info):
+    print("  performing read-only ESP32-C3 chip identity check before any erase")
+    try:
+        run_esptool([
+            "--chip", "esp32c3",
+            "--port", port_info.device,
+            "chip-id",
+        ])
+    except Exception as exc:
+        raise RuntimeError(
+            "The board could not be safely identified with esptool, so no flash was erased. "
+            "Close MultiFunPlayer, Thonny, serial monitors, and other flashing tools, then retry. "
+            "Original error: {}".format(exc)
+        ) from exc
+    return wait_for_port(port_info, timeout=10.0)
+
+
 def ensure_micropython(port_info, image_path: Path):
-    installed, details = probe_micropython(port_info.device)
-    if installed:
-        print("  detected:", details)
-        print("  environment installation skipped")
-        return port_info, False
+    last_details = ""
+    for attempt in range(1, ENVIRONMENT_PROBE_ATTEMPTS + 1):
+        port_info = wait_for_port(port_info, timeout=10.0)
+        if attempt > 1:
+            time.sleep(0.75)
+        installed, last_details = probe_micropython(port_info.device)
+        if installed:
+            print("  detected:", last_details)
+            print("  environment installation skipped")
+            return port_info, False
+        if attempt < ENVIRONMENT_PROBE_ATTEMPTS:
+            print("  probe {}/{} received no MicroPython REPL; retrying after USB settles".format(
+                attempt, ENVIRONMENT_PROBE_ATTEMPTS
+            ))
+
+    print("  no MicroPython REPL after {} probes".format(ENVIRONMENT_PROBE_ATTEMPTS))
+    if last_details:
+        print("  last probe:", last_details.replace("\n", " ")[:240])
+    port_info = wait_for_port(port_info, timeout=10.0)
+    port_info = verify_esptool_access(port_info)
     return install_micropython(port_info, image_path), True
 
 
-def detect_port(requested_port=None):
-    ports = list(list_ports.comports())
-    if requested_port:
-        match = next((item for item in ports if item.device.upper() == requested_port.upper()), None)
-        if match is None:
-            raise RuntimeError("Requested serial port was not found: " + requested_port)
-        return match
+def detect_port(requested_port=None, timeout=PORT_DISCOVERY_TIMEOUT):
+    print("  waiting up to {:.0f} seconds for an ESP32-C3 serial port".format(timeout))
+    deadline = time.monotonic() + timeout
+    last_ports = []
+    while time.monotonic() < deadline:
+        ports = list(list_ports.comports())
+        last_ports = ports
+        if requested_port:
+            match = next(
+                (item for item in ports if item.device.upper() == requested_port.upper()),
+                None,
+            )
+            if match is not None:
+                return match
+        else:
+            espressif = [item for item in ports if item.vid == EXPECTED_VID]
+            if len(espressif) == 1:
+                return espressif[0]
+            if len(espressif) > 1:
+                raise RuntimeError(
+                    "More than one Espressif board is connected. Disconnect the extra board and try again."
+                )
+            usb_ports = [
+                item for item in ports
+                if item.device.upper() != "COM1" and item.vid is not None
+            ]
+            if len(usb_ports) == 1:
+                return usb_ports[0]
+        time.sleep(0.5)
 
-    espressif = [item for item in ports if item.vid == EXPECTED_VID]
-    if len(espressif) == 1:
-        return espressif[0]
-    if not espressif:
-        usb_ports = [item for item in ports if item.device.upper() != "COM1" and item.vid is not None]
-        if len(usb_ports) == 1:
-            return usb_ports[0]
-        raise RuntimeError("No Espressif USB serial device was found. Connect the board and try again.")
-    raise RuntimeError("More than one Espressif board is connected. Disconnect the extra board and try again.")
+    visible = ", ".join(
+        "{} ({})".format(item.device, item.description) for item in last_ports
+    ) or "none"
+    if requested_port:
+        raise RuntimeError(
+            "Requested serial port {} did not appear. Visible ports: {}".format(
+                requested_port, visible
+            )
+        )
+    raise RuntimeError(
+        "No ESP32-C3 USB serial port appeared within {:.0f} seconds. Visible ports: {}. "
+        "Use a USB data cable, or hold BOOT while reconnecting the board.".format(
+            timeout, visible
+        )
+    )
 
 
 def backup_board(port: str, backup_dir: Path):

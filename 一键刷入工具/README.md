@@ -8,7 +8,9 @@
 功能：
 
 - 自动识别 Espressif USB 串口；
+- 启动后最多等待 20 秒，避免开发板 USB 串口尚未完成枚举就立即失败；
 - 检测板上是否存在可用的 MicroPython REPL；
+- 连续 3 次确认没有 REPL，并通过只读 `chip-id` 验证确实是 ESP32-C3 后，才允许擦除；
 - 未检测到环境时，通过内置 esptool 擦除并安装内置 MicroPython；
 - 已检测到环境时跳过环境安装，不擦除 Flash；
 - 刷入前备份板上文件；
@@ -32,3 +34,5 @@ pyinstaller --clean --onefile --console `
 ```
 
 首次环境安装会擦除整块 Flash。若开发板不能自动进入下载模式，请按住 `BOOT`，短按并松开 `RESET`，然后松开 `BOOT` 再重新运行刷入器。
+
+如果提示串口占用，请完全关闭 Thonny、MultiFunPlayer 和串口监视器后重试。只读芯片检查失败时程序会停止，并明确显示 `no flash was erased`。
