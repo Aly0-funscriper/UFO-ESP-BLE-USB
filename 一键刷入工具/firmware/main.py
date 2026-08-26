@@ -124,7 +124,9 @@ class UFOTW_BLE:
             pass
 
         sleep_ms(50)
-        name = bytes(self.name, 'UTF-8')
+        # The advertised name is ASCII. Avoid codec lookup because some
+        # minimal MicroPython builds do not include the "UTF-8" alias.
+        name = bytes([ord(char) for char in self.name])
         adv_data = (bytearray(b'\x02\x01\x02')
                     + bytearray((len(name) + 1, 0x09)) + name
                     + bytearray((17, 0x07)) + _UFO_ADV_UUID_LE)

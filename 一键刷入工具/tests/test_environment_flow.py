@@ -11,6 +11,9 @@ SPEC.loader.exec_module(FLASHER)
 
 
 class EnvironmentFlowTests(unittest.TestCase):
+    def test_capture_stream_always_exposes_utf8_encoding(self):
+        self.assertEqual(FLASHER.EncodedStringIO().encoding, "utf-8")
+
     def test_probe_recognizes_micropython_marker(self):
         original = FLASHER.capture_mpremote
         try:

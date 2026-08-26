@@ -25,6 +25,14 @@ PORT_DISCOVERY_TIMEOUT = 20.0
 ENVIRONMENT_PROBE_ATTEMPTS = 3
 
 
+class EncodedStringIO(io.StringIO):
+    # mpremote decodes transport output using sys.stdout.encoding. The plain
+    # io.StringIO used by redirect_stdout reports encoding=None.
+    @property
+    def encoding(self):
+        return "utf-8"
+
+
 def app_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -54,7 +62,7 @@ def run_mpremote(arguments, tolerate_failure=False):
     sys.argv = ["mpremote", *[str(value) for value in arguments]]
     try:
         if tolerate_failure:
-            captured = io.StringIO()
+            captured = EncodedStringIO()
             with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
                 status = mpremote_main()
         else:
@@ -77,7 +85,7 @@ def run_mpremote(arguments, tolerate_failure=False):
 
 def capture_mpremote(arguments):
     previous_argv = sys.argv[:]
-    captured = io.StringIO()
+    captured = EncodedStringIO()
     sys.argv = ["mpremote", *[str(value) for value in arguments]]
     try:
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
@@ -451,8 +459,8 @@ def run_self_test():
 
 def main():
     try:
-        sys.stdout.reconfigure(line_buffering=True)
-        sys.stderr.reconfigure(line_buffering=True)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
